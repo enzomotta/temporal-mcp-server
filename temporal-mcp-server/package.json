@@ -1,0 +1,13 @@
+{
+  "name": "temporal-mcp-server",
+  "version": "1.0.0",
+  "description": "A Model Context Protocol (MCP) server written in Kotlin that enables AI assistants like Claude to interact with Temporal workflows for automated testing and workflow management.",
+  "main": "mcp-wrapper.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {}
+}
