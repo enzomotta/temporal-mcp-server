@@ -5,17 +5,52 @@ node_modules/
 # Build outputs
 dist/
 build/
+!**/src/main/**/build/
+!**/src/test/**/build/
 out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
 
-# IDE
+# Gradle
+.gradle
+
+### IntelliJ IDEA ###
 .idea/
-.vscode/
-*.swp
-*.swo
+*.iws
+*.iml
+*.ipr
 
-# OS
+### Kotlin ###
+.kotlin
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+### OS ###
 .DS_Store
 Thumbs.db
+
+# Editor
+*.swp
+*.swo
 
 # Environment
 .env

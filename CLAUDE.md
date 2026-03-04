@@ -118,7 +118,7 @@ The server is designed to be used with Claude Code via the Node.js bridge:
 claude mcp add-json temporal-server '{
   "type": "stdio", 
   "command": "node", 
-  "args": ["/path/to/temporal-mcp-server/minimal-mcp.js"],
+  "args": ["/path/to/minimal-mcp.js"],
   "env": {
     "TEMPORAL_ADDRESS": "your-namespace.your-account.tmprl.cloud:7233",
     "TEMPORAL_NAMESPACE": "your-namespace.your-account",
