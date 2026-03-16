@@ -950,6 +950,7 @@ class TemporalMCPServer(
             )
             .setReason(reason)
             .setWorkflowTaskFinishEventId(resolvedEventId)
+            .setRequestId(java.util.UUID.randomUUID().toString())
             .build()
 
         val response = serviceStubs!!.blockingStub().resetWorkflowExecution(request)
