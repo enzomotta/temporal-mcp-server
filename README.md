@@ -89,8 +89,8 @@ For mTLS authentication, provide either file paths or content directly:
 | Tool | Description |
 |---|---|
 | `list_workflows` | Lists workflows in the namespace. Supports `query` filter and `pageSize` (1-1000, default 10). |
-| `get_workflow_status` | Gets status of a specific workflow by `workflowId` (optional `runId`). |
-| `get_workflow_history` | Retrieves the complete event history of a workflow. |
+| `get_workflow_status` | Gets status of a specific workflow by `workflowId` (optional `runId`). Returns `parentWorkflowId`, `parentRunId`, `taskQueue`, `closeTime`, `memo`, and `searchAttributes`. |
+| `get_workflow_history` | Retrieves the complete event history of a workflow with full event attributes. |
 | `query_workflow` | Executes a query on a running workflow (`workflowId`, `queryType`, optional `args`). |
 
 ### Workflow Actions
@@ -99,6 +99,7 @@ For mTLS authentication, provide either file paths or content directly:
 |---|---|
 | `start_workflow` | Starts a new workflow (`workflowId`, `workflowType`, `taskQueue`, optional `args`). |
 | `send_signal` | Sends a signal to a running workflow (`workflowId`, `signalName`, optional `signalArgs`). |
+| `reset_workflow` | Resets a workflow to a specific point in its history, creating a new run. Supports `eventId` or `resetType: "last_workflow_task"` to auto-detect the last WorkflowTaskCompleted event. |
 | `terminate_workflow` | Terminates a running workflow (`workflowId`, optional `reason`). |
 
 ### Utilities

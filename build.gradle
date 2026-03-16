@@ -16,6 +16,9 @@ dependencies {
     // Temporal SDK
     implementation("io.temporal:temporal-sdk:1.33.0")
 
+    // Protobuf JSON serialization (for extracting event attributes)
+    implementation("com.google.protobuf:protobuf-java-util:3.25.5")
+
     // JSON processing
     implementation("com.fasterxml.jackson.core:jackson-databind:2.18.3")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.18.3")

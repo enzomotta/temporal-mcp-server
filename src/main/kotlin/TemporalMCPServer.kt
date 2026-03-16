@@ -18,6 +18,7 @@ import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.HttpURLConnection
 import java.net.URI
+import com.google.protobuf.util.JsonFormat
 import java.time.Duration
 
 // Custom exceptions for better error handling
@@ -567,6 +568,37 @@ class TemporalMCPServer(
                         ),
                         "required" to listOf("webhookUrl", "payload")
                     )
+                ),
+                Tool(
+                    name = "reset_workflow",
+                    description = "Resets a workflow to a specific point in its history, creating a new run from that point",
+                    inputSchema = mapOf(
+                        "type" to "object",
+                        "properties" to mapOf(
+                            "workflowId" to mapOf(
+                                "type" to "string",
+                                "description" to "Workflow ID"
+                            ),
+                            "runId" to mapOf(
+                                "type" to "string",
+                                "description" to "Workflow run ID (optional)"
+                            ),
+                            "eventId" to mapOf(
+                                "type" to "number",
+                                "description" to "Event ID of the WorkflowTaskCompleted event to reset to (optional, auto-detects last if not provided)"
+                            ),
+                            "resetType" to mapOf(
+                                "type" to "string",
+                                "description" to "Type of reset: 'last_workflow_task' to reset to the last WorkflowTaskCompleted event (default)",
+                                "enum" to listOf("last_workflow_task")
+                            ),
+                            "reason" to mapOf(
+                                "type" to "string",
+                                "description" to "Reason for resetting the workflow"
+                            )
+                        ),
+                        "required" to listOf("workflowId")
+                    )
                 )
             )
         )
@@ -589,6 +621,7 @@ class TemporalMCPServer(
             "start_workflow" -> startWorkflow(arguments)
             "wait_for_activity" -> waitForActivity(arguments)
             "send_webhook" -> sendWebhook(arguments)
+            "reset_workflow" -> resetWorkflow(arguments)
             else -> throw IllegalArgumentException("Unknown tool: $toolName")
         }
 
@@ -663,14 +696,35 @@ class TemporalMCPServer(
             .build()
         
         val description = serviceStubs!!.blockingStub().describeWorkflowExecution(describeRequest)
+        val info = description.workflowExecutionInfo
+
+        val parentWorkflowId = info.parentExecution.workflowId.ifEmpty { null }
+        val parentRunId = info.parentExecution.runId.ifEmpty { null }
+
+        val closeTimeSeconds = info.closeTime.seconds
+        val closeTime = if (closeTimeSeconds > 0) java.time.Instant.ofEpochSecond(closeTimeSeconds).toString() else null
+
+        val memo = if (info.memo.fieldsCount > 0) {
+            info.memo.fieldsMap.mapValues { (_, v) -> v.data.toStringUtf8() }
+        } else null
+
+        val searchAttributes = if (info.searchAttributes.indexedFieldsCount > 0) {
+            info.searchAttributes.indexedFieldsMap.mapValues { (_, v) -> v.data.toStringUtf8() }
+        } else null
 
         val status = mapOf(
-            "workflowId" to description.workflowExecutionInfo.execution.workflowId,
-            "runId" to description.workflowExecutionInfo.execution.runId,
-            "type" to description.workflowExecutionInfo.type.name,
-            "status" to description.workflowExecutionInfo.status.name,
-            "startTime" to description.workflowExecutionInfo.startTime.seconds,
-            "historyLength" to description.workflowExecutionInfo.historyLength
+            "workflowId" to info.execution.workflowId,
+            "runId" to info.execution.runId,
+            "type" to info.type.name,
+            "status" to info.status.name,
+            "startTime" to java.time.Instant.ofEpochSecond(info.startTime.seconds).toString(),
+            "closeTime" to closeTime,
+            "historyLength" to info.historyLength,
+            "parentWorkflowId" to parentWorkflowId,
+            "parentRunId" to parentRunId,
+            "taskQueue" to info.taskQueue,
+            "memo" to memo,
+            "searchAttributes" to searchAttributes
         )
 
         mapper.writeValueAsString(status)
@@ -682,12 +736,34 @@ class TemporalMCPServer(
             ?: throw IllegalArgumentException("workflowId is required")
 
         val historyEvents = getWorkflowHistoryEvents(workflowId)
+        val printer = JsonFormat.printer()
+            .omittingInsignificantWhitespace()
+            .preservingProtoFieldNames()
+
         val events = historyEvents.map { event ->
-            mapOf<String, Any?>(
+            val baseMap = mutableMapOf<String, Any?>(
                 "eventId" to event.eventId,
                 "eventType" to event.eventType.name,
-                "eventTime" to event.eventTime?.seconds
+                "eventTime" to if (event.hasEventTime()) java.time.Instant.ofEpochSecond(event.eventTime.seconds).toString() else null
             )
+
+            // Extract event attributes generically using protobuf JSON serialization
+            try {
+                val eventJson = printer.print(event)
+                val eventMap = mapper.readValue<Map<String, Any?>>(eventJson)
+
+                // Find the attributes field (ends with "EventAttributes" or "event_attributes")
+                val attributesEntry = eventMap.entries.find {
+                    it.key.endsWith("EventAttributes") || it.key.endsWith("event_attributes")
+                }
+                if (attributesEntry != null) {
+                    baseMap["attributes"] = attributesEntry.value
+                }
+            } catch (e: Exception) {
+                logger.debug("Could not extract attributes for event ${event.eventId}: ${e.message}")
+            }
+
+            baseMap
         }
 
         mapper.writeValueAsString(events)
@@ -843,6 +919,49 @@ class TemporalMCPServer(
         }
 
         throw IllegalStateException("Timeout waiting for activity '$activityName' in workflow $workflowId after ${timeoutSeconds}s")
+    }
+
+    private suspend fun resetWorkflow(args: Map<String, Any>): String = coroutineScope {
+        ensureTemporalClient()
+        val workflowId = args["workflowId"] as? String
+            ?: throw IllegalArgumentException("workflowId is required")
+        val runId = args["runId"] as? String
+        val eventId = (args["eventId"] as? Number)?.toLong()
+        val reason = args["reason"] as? String ?: "Reset via MCP"
+
+        val resolvedEventId = if (eventId != null) {
+            eventId
+        } else {
+            // Find the last WorkflowTaskCompleted event
+            val historyEvents = getWorkflowHistoryEvents(workflowId)
+            val lastWorkflowTaskCompleted = historyEvents.lastOrNull { event ->
+                event.eventType == io.temporal.api.enums.v1.EventType.EVENT_TYPE_WORKFLOW_TASK_COMPLETED
+            } ?: throw IllegalStateException("No WorkflowTaskCompleted event found in workflow $workflowId history")
+            lastWorkflowTaskCompleted.eventId
+        }
+
+        val request = io.temporal.api.workflowservice.v1.ResetWorkflowExecutionRequest.newBuilder()
+            .setNamespace(namespace)
+            .setWorkflowExecution(
+                io.temporal.api.common.v1.WorkflowExecution.newBuilder()
+                    .setWorkflowId(workflowId)
+                    .setRunId(runId ?: "")
+                    .build()
+            )
+            .setReason(reason)
+            .setWorkflowTaskFinishEventId(resolvedEventId)
+            .build()
+
+        val response = serviceStubs!!.blockingStub().resetWorkflowExecution(request)
+
+        val result = mapOf(
+            "workflowId" to workflowId,
+            "runId" to response.runId,
+            "resetToEventId" to resolvedEventId,
+            "reason" to reason
+        )
+
+        mapper.writeValueAsString(result)
     }
 
     private suspend fun sendWebhook(args: Map<String, Any>): String = coroutineScope {
