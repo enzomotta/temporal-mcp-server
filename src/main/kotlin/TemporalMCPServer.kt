@@ -420,13 +420,26 @@ class TemporalMCPServer(
                 ),
                 Tool(
                     name = "get_workflow_history",
-                    description = "Gets the event history of a workflow",
+                    description = "Gets the event history of a workflow with optional filtering",
                     inputSchema = mapOf(
                         "type" to "object",
                         "properties" to mapOf(
                             "workflowId" to mapOf(
                                 "type" to "string",
                                 "description" to "Workflow ID"
+                            ),
+                            "eventTypes" to mapOf(
+                                "type" to "array",
+                                "items" to mapOf("type" to "string"),
+                                "description" to "Filter by event types (e.g. [\"EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED\", \"EVENT_TYPE_ACTIVITY_TASK_SCHEDULED\"])"
+                            ),
+                            "lastN" to mapOf(
+                                "type" to "number",
+                                "description" to "Return only the last N events (applied after other filters)"
+                            ),
+                            "fromEventId" to mapOf(
+                                "type" to "number",
+                                "description" to "Return events starting from this event ID (inclusive)"
                             )
                         ),
                         "required" to listOf("workflowId")
@@ -736,11 +749,33 @@ class TemporalMCPServer(
             ?: throw IllegalArgumentException("workflowId is required")
 
         val historyEvents = getWorkflowHistoryEvents(workflowId)
+        val totalEvents = historyEvents.size
+
+        // Apply filters
+        var filteredEvents = historyEvents
+
+        val eventTypes = (args["eventTypes"] as? List<*>)?.mapNotNull { it as? String }
+        if (!eventTypes.isNullOrEmpty()) {
+            filteredEvents = filteredEvents.filter { event ->
+                eventTypes.contains(event.eventType.name)
+            }
+        }
+
+        val fromEventId = (args["fromEventId"] as? Number)?.toLong()
+        if (fromEventId != null) {
+            filteredEvents = filteredEvents.filter { it.eventId >= fromEventId }
+        }
+
+        val lastN = (args["lastN"] as? Number)?.toInt()
+        if (lastN != null && lastN > 0) {
+            filteredEvents = filteredEvents.takeLast(lastN)
+        }
+
         val printer = JsonFormat.printer()
             .omittingInsignificantWhitespace()
             .preservingProtoFieldNames()
 
-        val events = historyEvents.map { event ->
+        val events = filteredEvents.map { event ->
             val baseMap = mutableMapOf<String, Any?>(
                 "eventId" to event.eventId,
                 "eventType" to event.eventType.name,
@@ -766,24 +801,42 @@ class TemporalMCPServer(
             baseMap
         }
 
-        mapper.writeValueAsString(events)
+        val result = mapOf(
+            "totalEvents" to totalEvents,
+            "returnedEvents" to filteredEvents.size,
+            "filters" to mapOf(
+                "eventTypes" to eventTypes,
+                "fromEventId" to fromEventId,
+                "lastN" to lastN
+            ),
+            "events" to events
+        )
+
+        mapper.writeValueAsString(result)
     }
 
     private fun getWorkflowHistoryEvents(workflowId: String): List<io.temporal.api.history.v1.HistoryEvent> {
-        val history = serviceStubs!!
-            .blockingStub()
-            .getWorkflowExecutionHistory(
-                io.temporal.api.workflowservice.v1.GetWorkflowExecutionHistoryRequest.newBuilder()
-                    .setNamespace(namespace)
-                    .setExecution(
-                        io.temporal.api.common.v1.WorkflowExecution.newBuilder()
-                            .setWorkflowId(workflowId)
-                            .build()
-                    )
-                    .build()
-            )
-        
-        return history.history.eventsList
+        val allEvents = mutableListOf<io.temporal.api.history.v1.HistoryEvent>()
+        var nextPageToken = com.google.protobuf.ByteString.EMPTY
+
+        do {
+            val response = serviceStubs!!.blockingStub()
+                .getWorkflowExecutionHistory(
+                    io.temporal.api.workflowservice.v1.GetWorkflowExecutionHistoryRequest.newBuilder()
+                        .setNamespace(namespace)
+                        .setExecution(
+                            io.temporal.api.common.v1.WorkflowExecution.newBuilder()
+                                .setWorkflowId(workflowId)
+                                .build()
+                        )
+                        .setNextPageToken(nextPageToken)
+                        .build()
+                )
+            allEvents.addAll(response.history.eventsList)
+            nextPageToken = response.nextPageToken
+        } while (!nextPageToken.isEmpty)
+
+        return allEvents
     }
 
     private suspend fun queryWorkflow(args: Map<String, Any>): String = coroutineScope {
